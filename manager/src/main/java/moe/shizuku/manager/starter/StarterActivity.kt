@@ -44,8 +44,8 @@ class StarterActivity : AppBarActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // 手动启动会先杀掉旧 server，这期间禁止看门狗也去拉起一次
-        WatchdogCore.suppressFor(60_000L)
+        // 手动启动会先杀掉旧 server，这期间自动拉起让位给人為操作
+        WatchdogCore.beginManualStart()
 
         // 用户手动启动，解除看门狗的抑制状态
         ShizukuSettings.setWatchdogUserStopped(false)
@@ -98,6 +98,11 @@ class StarterActivity : AppBarActivity() {
             }
             binding.text1.text = output
         }
+    }
+
+    override fun onDestroy() {
+        WatchdogCore.endManualStart()
+        super.onDestroy()
     }
 
     companion object {

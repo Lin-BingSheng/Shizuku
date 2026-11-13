@@ -4,7 +4,6 @@ import android.Manifest.permission.WRITE_SECURE_SETTINGS
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
-import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
 import androidx.annotation.RequiresApi
@@ -44,24 +43,28 @@ object WatchdogCore {
      */
     private const val MDNS_TIMEOUT_MS = 30_000L
 
-    /** 防止开机广播与 binder death 回调同时触发，导致重复拉起 */
-    private val starting = AtomicBoolean(false)
-
-    /** 手动启动期间抑制看门狗，避免与 StarterActivity 的启动流程竞争 */
-    @Volatile
-    private var suppressUntil = 0L
+    /** 防止开机广播、binder death、网络恢复等多个触发源同时拉起 */
+    private val autoLaunching = AtomicBoolean(false)
 
     /**
-     * 在一段时间内禁止看门狗拉起 server。
+     * 是否有手动启动正在进行。
      *
-     * 手动启动会先杀掉旧 server，这会触发 binder death 回调，
-     * 如果不禁用，看门狗会同时再执行一次 starter，表现为启动两次。
+     * 手动启动会先杀掉旧 server，这个动作本身会触发 binder death。
+     * 自动拉起必须让位给人為操作，否则会出现两次启动。
+     *
+     * 这是作用域标记而不是时间窗口：StarterActivity 进入时置位、离开时清除。
+     * 用户停留在启动页期间就是人工在操作；离开后控制权自动交还给看门狗。
      */
-    fun suppressFor(millis: Long) {
-        suppressUntil = SystemClock.elapsedRealtime() + millis
+    @Volatile
+    private var manualStartInProgress = false
+
+    fun beginManualStart() {
+        manualStartInProgress = true
     }
 
-    private fun isSuppressed(): Boolean = SystemClock.elapsedRealtime() < suppressUntil
+    fun endManualStart() {
+        manualStartInProgress = false
+    }
 
     /**
      * @param ignoreSwitch true 表示忽略看门狗开关，用于保留官方原有的开机启动行为
@@ -70,7 +73,7 @@ object WatchdogCore {
     fun ensureServer(context: Context, ignoreSwitch: Boolean = false) {
         val appContext = context.applicationContext
 
-        if (isSuppressed()) return
+        if (manualStartInProgress) return
         if (!ignoreSwitch && !ShizukuSettings.isWatchdogEnabled()) return
         if (ShizukuSettings.isWatchdogUserStopped()) return
 
@@ -78,7 +81,7 @@ object WatchdogCore {
         // 它是 server 能被重新拉起的前提，所以要在判断 server 死活之前先修好。
         ensureWirelessAdb(appContext)
 
-        if (!starting.compareAndSet(false, true)) return
+        if (!autoLaunching.compareAndSet(false, true)) return
 
         try {
             if (ShizukuSettings.getLastLaunchMode() != LaunchMethod.ADB) return
@@ -95,7 +98,7 @@ object WatchdogCore {
         } catch (t: Throwable) {
             Log.w(TAG, "ensureServer failed", t)
         } finally {
-            starting.set(false)
+            autoLaunching.set(false)
         }
     }
 
