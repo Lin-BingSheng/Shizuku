@@ -4,6 +4,7 @@ import android.Manifest.permission.WRITE_SECURE_SETTINGS
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
+import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
 import androidx.annotation.RequiresApi
@@ -46,6 +47,22 @@ object WatchdogCore {
     /** 防止开机广播与 binder death 回调同时触发，导致重复拉起 */
     private val starting = AtomicBoolean(false)
 
+    /** 手动启动期间抑制看门狗，避免与 StarterActivity 的启动流程竞争 */
+    @Volatile
+    private var suppressUntil = 0L
+
+    /**
+     * 在一段时间内禁止看门狗拉起 server。
+     *
+     * 手动启动会先杀掉旧 server，这会触发 binder death 回调，
+     * 如果不禁用，看门狗会同时再执行一次 starter，表现为启动两次。
+     */
+    fun suppressFor(millis: Long) {
+        suppressUntil = SystemClock.elapsedRealtime() + millis
+    }
+
+    private fun isSuppressed(): Boolean = SystemClock.elapsedRealtime() < suppressUntil
+
     /**
      * @param ignoreSwitch true 表示忽略看门狗开关，用于保留官方原有的开机启动行为
      */
@@ -53,6 +70,7 @@ object WatchdogCore {
     fun ensureServer(context: Context, ignoreSwitch: Boolean = false) {
         val appContext = context.applicationContext
 
+        if (isSuppressed()) return
         if (!ignoreSwitch && !ShizukuSettings.isWatchdogEnabled()) return
         if (ShizukuSettings.isWatchdogUserStopped()) return
 

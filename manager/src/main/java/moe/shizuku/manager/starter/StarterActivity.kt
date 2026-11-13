@@ -20,6 +20,7 @@ import moe.shizuku.manager.adb.AdbKeyException
 import moe.shizuku.manager.adb.PreferenceAdbKeyStore
 import moe.shizuku.manager.app.AppBarActivity
 import moe.shizuku.manager.databinding.StarterActivityBinding
+import moe.shizuku.manager.watchdog.WatchdogCore
 import rikka.lifecycle.Resource
 import rikka.lifecycle.Status
 import rikka.lifecycle.viewModels
@@ -42,6 +43,9 @@ class StarterActivity : AppBarActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // 手动启动会先杀掉旧 server，这期间禁止看门狗也去拉起一次
+        WatchdogCore.suppressFor(60_000L)
 
         // 用户手动启动，解除看门狗的抑制状态
         ShizukuSettings.setWatchdogUserStopped(false)
