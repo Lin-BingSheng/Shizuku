@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.IBinder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import moe.shizuku.manager.ShizukuSettings
 import rikka.shizuku.Shizuku
@@ -45,7 +46,24 @@ class WatchdogService : Service() {
             if (ShizukuSettings.isWatchdogUserStopped()) return
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
 
-            CoroutineScope(Dispatchers.IO).launch {
+            watchAfterNetworkBack()
+        }
+    }
+
+    /**
+     * Wi-Fi 恢复后观察一段时间，而不是只问一次。
+     *
+     * adbd 清理 server 有延迟：Wi-Fi 刚回来时 server 往往还活着，只问一次会直接返回，
+     * 等它随后真正死掉时已经没有触发源了。这里在一分钟内问四次，每次只是一次
+     * pingBinder，开销可以忽略。
+     */
+    private fun watchAfterNetworkBack() {
+        CoroutineScope(Dispatchers.IO).launch {
+            val delays = longArrayOf(10_000L, 20_000L, 20_000L, 20_000L)
+            for (d in delays) {
+                delay(d)
+                if (!ShizukuSettings.isWatchdogEnabled()) return@launch
+                if (ShizukuSettings.isWatchdogUserStopped()) return@launch
                 WatchdogCore.ensureServer(this@WatchdogService)
             }
         }
