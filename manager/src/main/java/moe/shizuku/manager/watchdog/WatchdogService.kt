@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.IBinder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import moe.shizuku.manager.ShizukuSettings
@@ -22,6 +23,8 @@ import rikka.shizuku.Shizuku
  * 不是前台服务，不显示通知。系统回收时监听随之失效，这是设计上接受的代价。
  */
 class WatchdogService : Service() {
+
+    private var watchJob: Job? = null
 
     private val binderDeadListener = Shizuku.OnBinderDeadListener {
         if (!ShizukuSettings.isWatchdogEnabled()) return@OnBinderDeadListener
@@ -54,17 +57,19 @@ class WatchdogService : Service() {
      * Wi-Fi 恢复后观察一段时间，而不是只问一次。
      *
      * adbd 清理 server 有延迟：Wi-Fi 刚回来时 server 往往还活着，只问一次会直接返回，
-     * 等它随后真正死掉时已经没有触发源了。这里在一分钟内问四次，每次只是一次
-     * pingBinder，开销可以忽略。
+     * 等它随后真正死掉时已经没有触发源了。这里按指数退避问四次（10s / 20s / 40s / 80s），
+     * 每次只是一次 pingBinder，开销可以忽略。
      */
     private fun watchAfterNetworkBack() {
-        CoroutineScope(Dispatchers.IO).launch {
-            val delays = longArrayOf(10_000L, 20_000L, 20_000L, 20_000L)
-            for (d in delays) {
-                delay(d)
+        watchJob?.cancel()
+        watchJob = CoroutineScope(Dispatchers.IO).launch {
+            var interval = 10_000L
+            repeat(4) {
+                delay(interval)
                 if (!ShizukuSettings.isWatchdogEnabled()) return@launch
                 if (ShizukuSettings.isWatchdogUserStopped()) return@launch
                 WatchdogCore.ensureServer(this@WatchdogService)
+                interval *= 2
             }
         }
     }
@@ -93,6 +98,7 @@ class WatchdogService : Service() {
     }
 
     override fun onDestroy() {
+        watchJob?.cancel()
         Shizuku.removeBinderDeadListener(binderDeadListener)
         try {
             getSystemService(ConnectivityManager::class.java)
