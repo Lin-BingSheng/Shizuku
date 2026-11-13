@@ -55,17 +55,16 @@ object WatchdogCore {
 
         if (!ignoreSwitch && !ShizukuSettings.isWatchdogEnabled()) return
         if (ShizukuSettings.isWatchdogUserStopped()) return
+
+        // 无线调试开关会在 Wi-Fi 断开时被系统关掉，恢复网络后不会自己回来。
+        // 它是 server 能被重新拉起的前提，所以要在判断 server 死活之前先修好。
+        ensureWirelessAdb(appContext)
+
         if (!starting.compareAndSet(false, true)) return
 
         try {
             if (ShizukuSettings.getLastLaunchMode() != LaunchMethod.ADB) return
             if (isServerAlive()) return
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
-                && appContext.checkSelfPermission(WRITE_SECURE_SETTINGS) == PackageManager.PERMISSION_GRANTED
-            ) {
-                enableWirelessAdb(appContext)
-            }
 
             val port = discoverPort(appContext)
             if (port <= 0) {
@@ -98,12 +97,24 @@ object WatchdogCore {
         return Shizuku.pingBinder()
     }
 
-    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
-    private fun enableWirelessAdb(context: Context) {
+    /**
+     * 确保无线调试是打开的。
+     *
+     * Wi-Fi 断开时系统会把 adb_wifi_enabled 置 0，网络恢复后不会自动置回，
+     * 于是 adbd 不再监听 tls-connect 端口，mDNS 也发现不到任何东西。
+     * 已经是 1 时直接返回，避免无谓写入。
+     */
+    private fun ensureWirelessAdb(context: Context) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        if (context.checkSelfPermission(WRITE_SECURE_SETTINGS) != PackageManager.PERMISSION_GRANTED) return
+
         val cr = context.contentResolver
+        if (Settings.Global.getInt(cr, "adb_wifi_enabled", 0) == 1) return
+
         Settings.Global.putInt(cr, "adb_wifi_enabled", 1)
         Settings.Global.putInt(cr, Settings.Global.ADB_ENABLED, 1)
         Settings.Global.putLong(cr, "adb_allowed_connection_time", 0L)
+        Log.i(TAG, "wireless adb re-enabled")
     }
 
     @RequiresApi(Build.VERSION_CODES.R)
