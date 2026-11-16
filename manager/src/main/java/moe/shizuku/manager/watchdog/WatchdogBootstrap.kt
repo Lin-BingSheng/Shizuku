@@ -1,18 +1,11 @@
 package moe.shizuku.manager.watchdog
 
-import android.content.BroadcastReceiver
 import android.content.Context
-import android.content.Intent
-import android.content.IntentFilter
-import android.database.ContentObserver
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.os.Build
-import android.os.Handler
-import android.os.Looper
-import android.provider.Settings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -71,54 +64,8 @@ object WatchdogBootstrap {
         if (!started.compareAndSet(false, true)) return
 
         registerNetworkCallback()
-        registerWirelessAdbObserver()
-        registerUserPresentReceiver()
         Shizuku.addBinderReceivedListenerSticky(binderReceivedListener)
         triggerRecovery()
-    }
-
-    /**
-     * 监听无线调试开关。
-     *
-     * 部分 ROM 会在开机后把 adb_wifi_enabled 重置为 0，且拒绝程序化写入，只能由用户手动打开。
-     * 用户打开的那一刻是唯一确定的恢复时机，不监听它就会一直停在"进程在、端口没起来"的状态。
-     */
-    private fun registerWirelessAdbObserver() {
-        val context = appContext ?: return
-        try {
-            context.contentResolver.registerContentObserver(
-                Settings.Global.getUriFor("adb_wifi_enabled"), false,
-                object : ContentObserver(Handler(Looper.getMainLooper())) {
-                    override fun onChange(selfChange: Boolean) {
-                        logd(TAG, "adb_wifi_enabled changed, try to recover")
-                        triggerRecovery()
-                    }
-                }
-            )
-        } catch (t: Throwable) {
-            logd(TAG, "register settings observer failed: $t")
-        }
-    }
-
-    /** 解锁也是一个明确的时机：锁屏期间无线调试往往不可用，解锁后才真正开始监听。 */
-    private fun registerUserPresentReceiver() {
-        val context = appContext ?: return
-        val receiver = object : BroadcastReceiver() {
-            override fun onReceive(c: Context, intent: Intent) {
-                if (intent.action != Intent.ACTION_USER_PRESENT) return
-                logd(TAG, "user present, try to recover")
-                triggerRecovery()
-            }
-        }
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                context.registerReceiver(receiver, IntentFilter(Intent.ACTION_USER_PRESENT), Context.RECEIVER_NOT_EXPORTED)
-            } else {
-                context.registerReceiver(receiver, IntentFilter(Intent.ACTION_USER_PRESENT))
-            }
-        } catch (t: Throwable) {
-            logd(TAG, "register user present receiver failed: $t")
-        }
     }
 
     private fun registerNetworkCallback() {
@@ -142,8 +89,9 @@ object WatchdogBootstrap {
     /**
      * 先立即试一次，失败按指数退避再试。
      *
-     * 广播拉起进程时 Wi-Fi 与 adbd 可能都还没就绪，只试一次会在端口出现前就放弃。
-     * 这里最多观察约 70 秒，仍远低于后台进程被回收前的典型存活时间。
+     * 冷启动时 Wi-Fi、解锁、无线调试恢复都是分段就绪的，只试一次会在端口出现前就放弃。
+     * 退避序列 10 / 20 / 40 / 80 / 160 秒，累计约 5 分钟，覆盖「解锁后手动打开无线调试」的正常耗时。
+     * 每次失败的成本只有一次 30 秒 mDNS 超时，成功时立即返回，不轮询、不唤醒。
      */
     private fun triggerRecovery() {
         val context = appContext ?: return
@@ -151,7 +99,7 @@ object WatchdogBootstrap {
             WatchdogCore.ensureServer(context)
 
             var interval = 10_000L
-            repeat(3) {
+            repeat(5) {
                 delay(interval)
                 if (Shizuku.pingBinder()) return@launch
                 if (!ShizukuSettings.isWatchdogEnabled()) return@launch
