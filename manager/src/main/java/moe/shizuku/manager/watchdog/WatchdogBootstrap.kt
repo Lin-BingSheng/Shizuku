@@ -87,7 +87,7 @@ object WatchdogBootstrap {
         val context = appContext ?: return
         try {
             context.contentResolver.registerContentObserver(
-                Settings.Global.getUriFor(Settings.Global.ADB_WIFI_ENABLED), false,
+                Settings.Global.getUriFor("adb_wifi_enabled"), false,
                 object : ContentObserver(Handler(Looper.getMainLooper())) {
                     override fun onChange(selfChange: Boolean) {
                         logd(TAG, "adb_wifi_enabled changed, try to recover")
