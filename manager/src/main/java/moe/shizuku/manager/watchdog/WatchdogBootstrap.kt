@@ -35,6 +35,25 @@ object WatchdogBootstrap {
     private var appContext: Context? = null
 
     /**
+     * server 死亡时立刻尝试恢复。
+     *
+     * 进程被广播在后台拉起时 [WatchdogService] 起不来，这条监听只能由这里持有，
+     * 否则 server 被杀后要等到下一次网络变化才有触发源。
+     */
+    private val binderDeadListener = Shizuku.OnBinderDeadListener {
+        if (!ShizukuSettings.isWatchdogEnabled()) return@OnBinderDeadListener
+        if (ShizukuSettings.isWatchdogUserStopped()) return@OnBinderDeadListener
+        logd(TAG, "binder dead, try to recover")
+        triggerRecovery()
+    }
+
+    /** 拿到 binder 之后才注册死亡监听，注册前没有 proxy 可监听。 */
+    private val binderReceivedListener = Shizuku.OnBinderReceivedListener {
+        Shizuku.removeBinderDeadListener(binderDeadListener)
+        Shizuku.addBinderDeadListener(binderDeadListener)
+    }
+
+    /**
      * 幂等。进程内首次调用时注册网络监听并触发一次恢复尝试。
      */
     fun ensure(context: Context) {
@@ -45,6 +64,7 @@ object WatchdogBootstrap {
         if (!started.compareAndSet(false, true)) return
 
         registerNetworkCallback()
+        Shizuku.addBinderReceivedListenerSticky(binderReceivedListener)
         triggerRecovery()
     }
 
