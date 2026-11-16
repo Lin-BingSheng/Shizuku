@@ -1,11 +1,18 @@
 package moe.shizuku.manager.watchdog
 
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.database.ContentObserver
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.provider.Settings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -64,8 +71,54 @@ object WatchdogBootstrap {
         if (!started.compareAndSet(false, true)) return
 
         registerNetworkCallback()
+        registerWirelessAdbObserver()
+        registerUserPresentReceiver()
         Shizuku.addBinderReceivedListenerSticky(binderReceivedListener)
         triggerRecovery()
+    }
+
+    /**
+     * 监听无线调试开关。
+     *
+     * 部分 ROM 会在开机后把 adb_wifi_enabled 重置为 0，且拒绝程序化写入，只能由用户手动打开。
+     * 用户打开的那一刻是唯一确定的恢复时机，不监听它就会一直停在"进程在、端口没起来"的状态。
+     */
+    private fun registerWirelessAdbObserver() {
+        val context = appContext ?: return
+        try {
+            context.contentResolver.registerContentObserver(
+                Settings.Global.getUriFor(Settings.Global.ADB_WIFI_ENABLED), false,
+                object : ContentObserver(Handler(Looper.getMainLooper())) {
+                    override fun onChange(selfChange: Boolean) {
+                        logd(TAG, "adb_wifi_enabled changed, try to recover")
+                        triggerRecovery()
+                    }
+                }
+            )
+        } catch (t: Throwable) {
+            logd(TAG, "register settings observer failed: $t")
+        }
+    }
+
+    /** 解锁也是一个明确的时机：锁屏期间无线调试往往不可用，解锁后才真正开始监听。 */
+    private fun registerUserPresentReceiver() {
+        val context = appContext ?: return
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(c: Context, intent: Intent) {
+                if (intent.action != Intent.ACTION_USER_PRESENT) return
+                logd(TAG, "user present, try to recover")
+                triggerRecovery()
+            }
+        }
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                context.registerReceiver(receiver, IntentFilter(Intent.ACTION_USER_PRESENT), Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                context.registerReceiver(receiver, IntentFilter(Intent.ACTION_USER_PRESENT))
+            }
+        } catch (t: Throwable) {
+            logd(TAG, "register user present receiver failed: $t")
+        }
     }
 
     private fun registerNetworkCallback() {
