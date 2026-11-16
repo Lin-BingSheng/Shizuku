@@ -89,9 +89,8 @@ object WatchdogBootstrap {
     /**
      * 先立即试一次，失败按指数退避再试。
      *
-     * 冷启动时 Wi-Fi、解锁、无线调试恢复都是分段就绪的，只试一次会在端口出现前就放弃。
-     * 退避序列 10 / 20 / 40 / 80 / 160 秒，累计约 5 分钟，覆盖「解锁后手动打开无线调试」的正常耗时。
-     * 每次失败的成本只有一次 30 秒 mDNS 超时，成功时立即返回，不轮询、不唤醒。
+     * 冷启动时 Wi-Fi 与 adbd 可能都还没就绪，只试一次会在端口出现前就放弃。
+     * 退避序列 10 / 20 / 40 秒，累计约 70 秒。成功时立即返回，失败时每次只消耗一次 mDNS 超时。
      */
     private fun triggerRecovery() {
         val context = appContext ?: return
@@ -99,7 +98,7 @@ object WatchdogBootstrap {
             WatchdogCore.ensureServer(context)
 
             var interval = 10_000L
-            repeat(5) {
+            repeat(3) {
                 delay(interval)
                 if (Shizuku.pingBinder()) return@launch
                 if (!ShizukuSettings.isWatchdogEnabled()) return@launch
